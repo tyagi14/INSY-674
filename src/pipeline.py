@@ -75,11 +75,14 @@ pipe = Pipeline(
             ),
         ),
         (
-            "one_hot_encoder",
+           "one_hot_encoder",
             OneHotEncoder(
                 variables=cast(
                     list[str | int],
                     config.ml_config.one_hot_features,
+        ),
+        drop_last=False,
+        ignore_format=True,
                 ),
             ),
         ),
