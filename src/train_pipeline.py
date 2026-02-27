@@ -1,5 +1,5 @@
 from __future__ import annotations
-
+import numpy as np
 import subprocess
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -77,7 +77,6 @@ def _build_evaluation_report(
         "feature_names": feature_names,
     }
 
-
 def run_training() -> Dict[str, float]:
     """Train and persist the model pipeline."""
 
@@ -129,7 +128,99 @@ def run_training() -> Dict[str, float]:
     save_drift_baseline(baseline=drift_baseline)
     return metrics
 
+def _generate_shap_summary(x_train, x_valid) -> None:
+    """Generate a SHAP summary plot with transformed feature names, if SHAP is installed."""
 
+    try:
+        import matplotlib.pyplot as plt
+        import shap
+    except ImportError:
+        return
+
+    try:
+        preprocessor = pipe[:-1]
+        model = pipe.named_steps["logistic_regression"]
+
+        x_train_t = preprocessor.transform(x_train)
+        x_valid_t = preprocessor.transform(x_valid)
+
+        input_feature_names = list(x_train.columns) if hasattr(x_train, "columns") else []
+        feature_names = _get_transformed_feature_names(
+            preprocessor=preprocessor,
+            x_transformed=x_valid_t,
+            input_feature_names=input_feature_names,
+        )
+        print("Feature names used in SHAP:")
+        
+        print(feature_names)
+
+        if _are_generic_feature_names(feature_names) and len(pipe.steps) > 1:
+            pre_scaler = pipe[:-2]
+            x_valid_pre_scaler = pre_scaler.transform(x_valid)
+            pre_scaler_feature_names = _get_transformed_feature_names(
+                preprocessor=pre_scaler,
+                x_transformed=x_valid_pre_scaler,
+                input_feature_names=input_feature_names,
+            )
+            if len(pre_scaler_feature_names) == np.asarray(x_valid_t).shape[1]:
+                feature_names = pre_scaler_feature_names
+
+        x_train_array = np.nan_to_num(
+            np.asarray(x_train_t, dtype=float), nan=0.0, posinf=0.0, neginf=0.0
+        )
+        x_valid_array = np.nan_to_num(
+            np.asarray(x_valid_t, dtype=float), nan=0.0, posinf=0.0, neginf=0.0
+        )
+
+        explainer = shap.LinearExplainer(model, x_train_array)
+        shap_values = explainer.shap_values(x_valid_array)
+
+        shap.summary_plot(
+            shap_values,
+            x_valid_array,
+            feature_names=feature_names,
+            show=False,
+        )
+        plt.tight_layout()
+        plt.savefig("shap_summary.png", dpi=150)
+        plt.close()
+    except Exception:
+        return
+
+
+def _get_transformed_feature_names(
+    preprocessor, x_transformed, input_feature_names: list[str]
+) -> list[str]:
+    """Resolve transformed feature names for SHAP plotting."""
+
+    if hasattr(x_transformed, "columns"):
+        return [str(col) for col in x_transformed.columns]
+
+    if hasattr(preprocessor, "get_feature_names_out"):
+        try:
+            return [str(col) for col in preprocessor.get_feature_names_out()]
+        except Exception:
+            pass
+
+    n_transformed_features = np.asarray(x_transformed).shape[1]
+
+    if input_feature_names and len(input_feature_names) == n_transformed_features:
+        return [str(col) for col in input_feature_names]
+
+    return [f"feature_{idx}" for idx in range(n_transformed_features)]
+
+
+def _are_generic_feature_names(feature_names: list[str]) -> bool:
+    """Return True when names look like SHAP defaults (feature_0, feature_1, ...)."""
+
+    if not feature_names:
+        return True
+
+    for idx, name in enumerate(feature_names):
+        if name not in {f"feature_{idx}", f"Feature {idx}"}:
+            return False
+
+    return True
 if __name__ == "__main__":
     training_metrics = run_training()
     print(
