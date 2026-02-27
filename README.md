@@ -73,6 +73,8 @@ Training now also writes a versioned evaluation report JSON to `src/trained_mode
 - `GET /api/v1/health` : API + model health/version (+ optional model metadata if available)
 - `POST /api/v1/predict` : batch predictions
 - `POST /api/v1/monitor/drift` : batch drift report against training baseline
+- `GET /api/v1/monitor/drift/history` : recent drift checks (supports `limit` and optional `model_version`)
+- `GET /api/v1/monitor/drift/summary` : aggregate drift stats for a time window (supports `window_days` and optional `model_version`)
 
 Example health response with metadata:
 
@@ -172,11 +174,73 @@ Example drift response:
 }
 ```
 
+Example drift history request:
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/monitor/drift/history?limit=5&model_version=0.1.0"
+```
+
+Example drift history response:
+
+```json
+{
+  "model_version": "0.1.0",
+  "limit": 5,
+  "total_records": 12,
+  "records": [
+    {
+      "checked_at": "2026-02-27T20:05:11.257217+00:00",
+      "model_version": "0.1.0",
+      "baseline_version": "0.1.0",
+      "n_records": 60,
+      "overall_status": "warn",
+      "top_drifting_features": ["city", "training_hours"],
+      "max_psi": 0.21,
+      "mean_psi": 0.07,
+      "n_warn_features": 2,
+      "n_drifted_features": 0
+    }
+  ]
+}
+```
+
+Example drift summary request:
+
+```bash
+curl -s "http://127.0.0.1:8000/api/v1/monitor/drift/summary?window_days=7&model_version=0.1.0"
+```
+
+Example drift summary response:
+
+```json
+{
+  "model_version": "0.1.0",
+  "window_days": 7,
+  "total_checks": 24,
+  "status_counts": {
+    "ok": 16,
+    "warn": 5,
+    "drifted": 2,
+    "insufficient_data": 1
+  },
+  "drift_rate": 0.0833,
+  "warn_rate": 0.2083,
+  "top_recurrent_features": [
+    {"feature_name": "city", "count": 5},
+    {"feature_name": "training_hours", "count": 3}
+  ],
+  "latest_check_at": "2026-02-27T20:05:11.257217+00:00"
+}
+```
+
 Interpretation note:
 - `overall_status = insufficient_data` means the request had fewer rows than configured `drift_min_samples` (default: `50`).
 - PSI thresholds used by the API are configurable in `src/config.yml`:
   - `drift_warn_threshold` (default `0.1`)
   - `drift_alert_threshold` (default `0.25`)
+- Drift history records are append-only JSONL entries generated on successful `/api/v1/monitor/drift` checks.
+- `GET /api/v1/monitor/drift/history` returns `200` with an empty list when history does not exist yet.
+- Query validation uses FastAPI defaults (`422`), and unexpected internal issues return `500`.
 
 ## Run tests
 ```bash

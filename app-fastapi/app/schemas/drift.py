@@ -41,3 +41,46 @@ class DriftResponse(BaseModel):
     top_drifting_features: List[str]
     feature_reports: List[FeatureDriftReport]
     message: Optional[str] = None
+
+
+class DriftHistoryRecord(BaseModel):
+    checked_at: str
+    model_version: str
+    baseline_version: str
+    n_records: int
+    overall_status: OverallDriftStatus
+    top_drifting_features: List[str]
+    max_psi: float
+    mean_psi: float
+    n_warn_features: int
+    n_drifted_features: int
+
+
+class DriftHistoryResponse(BaseModel):
+    model_version: Optional[str] = None
+    limit: int
+    total_records: int
+    records: List[DriftHistoryRecord]
+
+
+class DriftStatusCounts(BaseModel):
+    ok: int = 0
+    warn: int = 0
+    drifted: int = 0
+    insufficient_data: int = 0
+
+
+class FeatureFrequency(BaseModel):
+    feature_name: str
+    count: int
+
+
+class DriftSummaryResponse(BaseModel):
+    model_version: Optional[str] = None
+    window_days: int
+    total_checks: int
+    status_counts: DriftStatusCounts
+    drift_rate: float
+    warn_rate: float
+    top_recurrent_features: List[FeatureFrequency]
+    latest_check_at: Optional[str] = None

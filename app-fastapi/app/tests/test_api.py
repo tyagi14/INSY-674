@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pandas as pd
@@ -44,6 +45,31 @@ def _baseline_for_api_tests():
         }
     )
     return build_drift_baseline(x_train=baseline_train, config=_test_drift_config())
+
+
+def _history_record(
+    *,
+    checked_at: datetime,
+    model_version: str = "0.1.0",
+    overall_status: str = "ok",
+    top_drifting_features: list[str] | None = None,
+    max_psi: float = 0.0,
+    mean_psi: float = 0.0,
+    n_warn_features: int = 0,
+    n_drifted_features: int = 0,
+) -> dict:
+    return {
+        "checked_at": checked_at.isoformat(),
+        "model_version": model_version,
+        "baseline_version": model_version,
+        "n_records": 60,
+        "overall_status": overall_status,
+        "top_drifting_features": top_drifting_features or [],
+        "max_psi": max_psi,
+        "mean_psi": mean_psi,
+        "n_warn_features": n_warn_features,
+        "n_drifted_features": n_drifted_features,
+    }
 
 
 def test_health_endpoint(client):
@@ -160,7 +186,14 @@ def test_health_endpoint_without_metadata(client, monkeypatch):
 def test_monitor_drift_endpoint_success(client, monkeypatch):
     from app import api
 
+    captured_records = []
+
     monkeypatch.setattr(api, "load_drift_baseline", lambda: _baseline_for_api_tests())
+    monkeypatch.setattr(
+        api,
+        "append_drift_history_record",
+        lambda record: captured_records.append(record),
+    )
     payload = {"inputs": [_valid_input_row()]}
 
     response = client.post("/api/v1/monitor/drift", json=payload)
@@ -170,6 +203,10 @@ def test_monitor_drift_endpoint_success(client, monkeypatch):
     assert "overall_status" in body
     assert "feature_reports" in body
     assert isinstance(body["feature_reports"], list)
+    assert len(captured_records) == 1
+    assert captured_records[0]["model_version"] == body["model_version"]
+    assert captured_records[0]["overall_status"] == body["overall_status"]
+    assert "checked_at" in captured_records[0]
 
 
 def test_monitor_drift_endpoint_missing_baseline(client, monkeypatch):
@@ -181,3 +218,163 @@ def test_monitor_drift_endpoint_missing_baseline(client, monkeypatch):
     response = client.post("/api/v1/monitor/drift", json=payload)
     assert response.status_code == 503
     assert "Drift baseline is missing" in response.json()["detail"]
+
+
+def test_monitor_drift_history_empty(client, monkeypatch):
+    from app import api
+
+    monkeypatch.setattr(api, "load_drift_history_records", lambda: [])
+    response = client.get("/api/v1/monitor/drift/history")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_records"] == 0
+    assert body["records"] == []
+
+
+def test_monitor_drift_history_filter_and_limit(client, monkeypatch):
+    from app import api
+
+    now = datetime.now(timezone.utc)
+    records = [
+        _history_record(
+            checked_at=now - timedelta(hours=2),
+            model_version="0.1.0",
+            overall_status="warn",
+            top_drifting_features=["city"],
+            max_psi=0.2,
+            mean_psi=0.1,
+            n_warn_features=1,
+        ),
+        _history_record(
+            checked_at=now - timedelta(hours=1),
+            model_version="0.2.0",
+            overall_status="drifted",
+            top_drifting_features=["training_hours"],
+            max_psi=0.4,
+            mean_psi=0.3,
+            n_drifted_features=1,
+        ),
+        _history_record(
+            checked_at=now,
+            model_version="0.1.0",
+            overall_status="ok",
+            top_drifting_features=[],
+            max_psi=0.02,
+            mean_psi=0.01,
+        ),
+    ]
+
+    monkeypatch.setattr(api, "load_drift_history_records", lambda: records)
+    response = client.get("/api/v1/monitor/drift/history?model_version=0.1.0&limit=1")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_version"] == "0.1.0"
+    assert body["limit"] == 1
+    assert body["total_records"] == 2
+    assert len(body["records"]) == 1
+    assert body["records"][0]["model_version"] == "0.1.0"
+    assert body["records"][0]["overall_status"] == "ok"
+
+
+def test_monitor_drift_summary_mixed_statuses(client, monkeypatch):
+    from app import api
+
+    now = datetime.now(timezone.utc)
+    records = [
+        _history_record(
+            checked_at=now - timedelta(days=1),
+            model_version="0.1.0",
+            overall_status="ok",
+            top_drifting_features=[],
+        ),
+        _history_record(
+            checked_at=now - timedelta(days=2),
+            model_version="0.1.0",
+            overall_status="warn",
+            top_drifting_features=["city"],
+            max_psi=0.15,
+            mean_psi=0.08,
+            n_warn_features=1,
+        ),
+        _history_record(
+            checked_at=now - timedelta(days=3),
+            model_version="0.1.0",
+            overall_status="drifted",
+            top_drifting_features=["city", "training_hours"],
+            max_psi=0.35,
+            mean_psi=0.2,
+            n_drifted_features=1,
+        ),
+        _history_record(
+            checked_at=now - timedelta(days=4),
+            model_version="0.2.0",
+            overall_status="insufficient_data",
+            top_drifting_features=["city"],
+        ),
+    ]
+    monkeypatch.setattr(api, "load_drift_history_records", lambda: records)
+
+    response = client.get("/api/v1/monitor/drift/summary?window_days=7")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_checks"] == 4
+    assert body["status_counts"]["ok"] == 1
+    assert body["status_counts"]["warn"] == 1
+    assert body["status_counts"]["drifted"] == 1
+    assert body["status_counts"]["insufficient_data"] == 1
+    assert body["drift_rate"] == 0.25
+    assert body["warn_rate"] == 0.25
+    assert len(body["top_recurrent_features"]) > 0
+    assert body["top_recurrent_features"][0]["feature_name"] == "city"
+    assert body["top_recurrent_features"][0]["count"] == 3
+    assert body["latest_check_at"] is not None
+
+
+def test_monitor_drift_summary_window_and_model_filter(client, monkeypatch):
+    from app import api
+
+    now = datetime.now(timezone.utc)
+    records = [
+        _history_record(
+            checked_at=now - timedelta(days=1),
+            model_version="0.1.0",
+            overall_status="warn",
+            top_drifting_features=["city"],
+        ),
+        _history_record(
+            checked_at=now - timedelta(days=10),
+            model_version="0.1.0",
+            overall_status="drifted",
+            top_drifting_features=["training_hours"],
+        ),
+        _history_record(
+            checked_at=now - timedelta(days=1),
+            model_version="0.2.0",
+            overall_status="drifted",
+            top_drifting_features=["experience"],
+        ),
+    ]
+    monkeypatch.setattr(api, "load_drift_history_records", lambda: records)
+
+    response = client.get(
+        "/api/v1/monitor/drift/summary?window_days=7&model_version=0.1.0"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["model_version"] == "0.1.0"
+    assert body["total_checks"] == 1
+    assert body["status_counts"]["warn"] == 1
+    assert body["status_counts"]["drifted"] == 0
+    assert body["drift_rate"] == 0.0
+    assert body["warn_rate"] == 1.0
+    assert body["top_recurrent_features"][0]["feature_name"] == "city"
+
+
+def test_monitor_drift_history_validation_error(client):
+    response = client.get("/api/v1/monitor/drift/history?limit=0")
+    assert response.status_code == 422
+
+
+def test_monitor_drift_summary_validation_error(client):
+    response = client.get("/api/v1/monitor/drift/summary?window_days=0")
+    assert response.status_code == 422

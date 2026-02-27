@@ -124,3 +124,39 @@ def load_drift_baseline() -> t.Optional[t.Dict[str, t.Any]]:
     if not file_path.exists():
         return None
     return _load_json_dict(file_path)
+
+
+def drift_history_file_name() -> str:
+    return f"{config.app_config.pipeline_save_file}{_version}_drift_history.jsonl"
+
+
+def drift_history_artifact_path() -> Path:
+    return TRAINED_MODEL_DIR / drift_history_file_name()
+
+
+def append_drift_history_record(record: t.Dict[str, t.Any]) -> None:
+    file_path = drift_history_artifact_path()
+    file_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(file_path, "a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=True))
+        f.write("\n")
+
+
+def load_drift_history_records() -> t.List[t.Dict[str, t.Any]]:
+    file_path = drift_history_artifact_path()
+    if not file_path.exists():
+        return []
+
+    records: t.List[t.Dict[str, t.Any]] = []
+    with open(file_path, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            try:
+                payload = json.loads(stripped)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                records.append(t.cast(t.Dict[str, t.Any], payload))
+    return records
